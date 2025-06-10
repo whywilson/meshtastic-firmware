@@ -20,6 +20,10 @@
 #include "graphics/fonts/EinkDisplayFonts.h"
 #endif
 
+#ifdef CJK_ENABLE
+#include "graphics/fonts/CJKFontData.h"
+#endif
+
 #ifdef OLED_PL
 #define FONT_SMALL_LOCAL ArialMT_Plain_10_PL
 #else
