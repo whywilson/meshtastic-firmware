@@ -229,6 +229,20 @@ class Screen : public concurrency::OSThread
 
     void drawColumns(OLEDDisplay *display, int16_t x, int16_t y, const char **fields);
 
+#ifdef CJK_ENABLE
+    std::vector<String> textLines;
+    int currentLineStart = 0;
+    unsigned long lastScrollTime = 0;
+
+    // CJK font rendering functions
+    void drawCJKString(OLEDDisplay *display, int16_t x, int16_t y, const char *text);
+    void drawCJKStringMaxWidth(OLEDDisplay *display, int16_t x, int16_t y, int16_t maxWidth, const char *text);
+    void drawCJKChar(OLEDDisplay *display, int16_t x, int16_t y, uint16_t unicode);
+    uint16_t utf8ToUnicode(const char *text, int &byteCount);
+    bool containsCJKCharacters(const char *text);
+    void resetScrolling();
+#endif
+
     /// Handle button press, trackball or swipe action)
     void onPress() { enqueueCmd(ScreenCmd{.cmd = Cmd::ON_PRESS}); }
     void showPrevFrame() { enqueueCmd(ScreenCmd{.cmd = Cmd::SHOW_PREV_FRAME}); }

@@ -14,6 +14,7 @@
 #include "input/ScanAndSelect.h"
 #include "mesh/generated/meshtastic/cannedmessages.pb.h"
 #include "modules/AdminModule.h"
+#include "graphics/Screen.h"
 
 #include "main.h"                               // for cardkb_found
 #include "modules/ExternalNotificationModule.h" // for buzzer control
@@ -35,6 +36,7 @@
 #define INACTIVATE_AFTER_MS 20000
 
 extern ScanI2C::DeviceAddress cardkb_found;
+extern graphics::Screen *screen;
 
 static const char *cannedMessagesConfigFile = "/prefs/cannedConf.proto";
 
@@ -1117,9 +1119,20 @@ void CannedMessageModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *st
             display->drawString(x + display->getWidth() - display->getStringWidth(buffer), y + 0, buffer);
         }
         display->setColor(WHITE);
+#ifdef CJK_ENABLE
+        const char* text = cannedMessageModule->drawWithCursor(cannedMessageModule->freetext, cannedMessageModule->cursor).c_str();
+        if (screen->containsCJKCharacters(text)) {
+            screen->drawCJKStringMaxWidth(display, 0 + x, 0 + y + FONT_HEIGHT_SMALL, x + display->getWidth(), text);
+        } else {
+            display->drawStringMaxWidth(
+                0 + x, 0 + y + FONT_HEIGHT_SMALL, x + display->getWidth(),
+                text);
+        }
+#else
         display->drawStringMaxWidth(
             0 + x, 0 + y + FONT_HEIGHT_SMALL, x + display->getWidth(),
             cannedMessageModule->drawWithCursor(cannedMessageModule->freetext, cannedMessageModule->cursor));
+#endif
 #endif
     } else {
         if (this->messagesCount > 0) {
@@ -1130,11 +1143,33 @@ void CannedMessageModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *st
             if (lines == 3) {
                 display->fillRect(0 + x, 0 + y + FONT_HEIGHT_SMALL * 2, x + display->getWidth(), y + FONT_HEIGHT_SMALL);
                 display->setColor(BLACK);
+#ifdef CJK_ENABLE
+                if (screen->containsCJKCharacters(cannedMessageModule->getCurrentMessage())) {
+                    screen->drawCJKString(display, 0 + x, 0 + y + FONT_HEIGHT_SMALL * 2, cannedMessageModule->getCurrentMessage());
+                } else {
+                    display->drawString(0 + x, 0 + y + FONT_HEIGHT_SMALL * 2, cannedMessageModule->getCurrentMessage());
+                }
+#else
                 display->drawString(0 + x, 0 + y + FONT_HEIGHT_SMALL * 2, cannedMessageModule->getCurrentMessage());
+#endif
                 display->setColor(WHITE);
                 if (this->messagesCount > 1) {
+#ifdef CJK_ENABLE
+                    if (screen->containsCJKCharacters(cannedMessageModule->getPrevMessage())) {
+                        screen->drawCJKString(display, 0 + x, 0 + y + FONT_HEIGHT_SMALL, cannedMessageModule->getPrevMessage());
+                    } else {
+                        display->drawString(0 + x, 0 + y + FONT_HEIGHT_SMALL, cannedMessageModule->getPrevMessage());
+                    }
+                    
+                    if (screen->containsCJKCharacters(cannedMessageModule->getNextMessage())) {
+                        screen->drawCJKString(display, 0 + x, 0 + y + FONT_HEIGHT_SMALL * 3, cannedMessageModule->getNextMessage());
+                    } else {
+                        display->drawString(0 + x, 0 + y + FONT_HEIGHT_SMALL * 3, cannedMessageModule->getNextMessage());
+                    }
+#else
                     display->drawString(0 + x, 0 + y + FONT_HEIGHT_SMALL, cannedMessageModule->getPrevMessage());
                     display->drawString(0 + x, 0 + y + FONT_HEIGHT_SMALL * 3, cannedMessageModule->getNextMessage());
+#endif
                 }
             } else {
                 int topMsg = (messagesCount > lines && currentMessageIndex >= lines - 1) ? currentMessageIndex - lines + 2 : 0;
@@ -1142,18 +1177,46 @@ void CannedMessageModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *st
                     if (i == currentMessageIndex - topMsg) {
 #ifdef USE_EINK
                         display->drawString(0 + x, 0 + y + FONT_HEIGHT_SMALL * (i + 1), ">");
+#ifdef CJK_ENABLE
+                        if (screen->containsCJKCharacters(cannedMessageModule->getCurrentMessage())) {
+                            screen->drawCJKString(display, 12 + x, 0 + y + FONT_HEIGHT_SMALL * (i + 1), 
+                                               cannedMessageModule->getCurrentMessage());
+                        } else {
+                            display->drawString(12 + x, 0 + y + FONT_HEIGHT_SMALL * (i + 1),
+                                            cannedMessageModule->getCurrentMessage());
+                        }
+#else
                         display->drawString(12 + x, 0 + y + FONT_HEIGHT_SMALL * (i + 1),
                                             cannedMessageModule->getCurrentMessage());
+#endif
 #else
                         display->fillRect(0 + x, 0 + y + FONT_HEIGHT_SMALL * (i + 1), x + display->getWidth(),
                                           y + FONT_HEIGHT_SMALL);
                         display->setColor(BLACK);
+#ifdef CJK_ENABLE
+                        if (screen->containsCJKCharacters(cannedMessageModule->getCurrentMessage())) {
+                            screen->drawCJKString(display, 0 + x, 0 + y + FONT_HEIGHT_SMALL * (i + 1), cannedMessageModule->getCurrentMessage());
+                        } else {
+                            display->drawString(0 + x, 0 + y + FONT_HEIGHT_SMALL * (i + 1), cannedMessageModule->getCurrentMessage());
+                        }
+#else
                         display->drawString(0 + x, 0 + y + FONT_HEIGHT_SMALL * (i + 1), cannedMessageModule->getCurrentMessage());
+#endif
                         display->setColor(WHITE);
 #endif
                     } else if (messagesCount > 1) { // Only draw others if there are multiple messages
+#ifdef CJK_ENABLE
+                        if (screen->containsCJKCharacters(cannedMessageModule->getMessageByIndex(topMsg + i))) {
+                            screen->drawCJKString(display, 0 + x, 0 + y + FONT_HEIGHT_SMALL * (i + 1), 
+                                               cannedMessageModule->getMessageByIndex(topMsg + i));
+                        } else {
+                            display->drawString(0 + x, 0 + y + FONT_HEIGHT_SMALL * (i + 1),
+                                            cannedMessageModule->getMessageByIndex(topMsg + i));
+                        }
+#else
                         display->drawString(0 + x, 0 + y + FONT_HEIGHT_SMALL * (i + 1),
                                             cannedMessageModule->getMessageByIndex(topMsg + i));
+#endif
                     }
                 }
             }
