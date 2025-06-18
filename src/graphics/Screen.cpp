@@ -953,6 +953,7 @@ bool deltaToTimestamp(uint32_t secondsAgo, uint8_t *hours, uint8_t *minutes, int
 /// Draw the last text message we received
 static void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
 {
+
     // the max length of this buffer is much longer than we can possibly print
     static char tempBuf[237];
 
@@ -1003,6 +1004,25 @@ static void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state
     }
 
     display->setColor(WHITE);
+
+#ifdef CJK_ENABLE
+    snprintf(tempBuf, sizeof(tempBuf), "%s", mp.decoded.payload.bytes);
+    static String lastMessage = "";
+    String currentMessage = String(tempBuf);
+
+    if (currentMessage != lastMessage) {
+        screen->resetScrolling();  // Only reset on new message
+        lastMessage = currentMessage;
+    }
+
+    if (screen->containsCJKCharacters(tempBuf)) {
+        screen->drawCJKStringMaxWidth(display, 0 + x, 0 + y + FONT_HEIGHT_SMALL, x + display->getWidth(), tempBuf);
+    } else {
+        display->drawStringMaxWidth(0 + x, 0 + y + FONT_HEIGHT_SMALL, x + display->getWidth(), tempBuf);
+    }
+    return;
+#endif
+
 #ifndef EXCLUDE_EMOJI
     const char *msg = reinterpret_cast<const char *>(mp.decoded.payload.bytes);
     if (strcmp(msg, "\U0001F44D") == 0) {
@@ -2862,7 +2882,168 @@ int Screen::handleAdminMessage(const meshtastic_AdminMessage *arg)
     return 0;
 }
 
+#ifdef CJK_ENABLE
+
+void Screen::resetScrolling() {
+    textLines.clear();
+    currentLineStart = 0;
+}
+
+// Convert UTF-8 to Unicode codepoint
+uint16_t Screen::utf8ToUnicode(const char *text, int &byteCount) {
+    uint8_t byte1 = (uint8_t)text[0];
+
+    if (byte1 < 0x80) {
+        // ASCII character
+        byteCount = 1;
+        return byte1;
+    } else if ((byte1 & 0xE0) == 0xC0) {
+        // 2-byte UTF-8
+        byteCount = 2;
+        return ((byte1 & 0x1F) << 6) | ((uint8_t)text[1] & 0x3F);
+    } else if ((byte1 & 0xF0) == 0xE0) {
+        // 3-byte UTF-8 (most CJK characters)
+        byteCount = 3;
+        return ((byte1 & 0x0F) << 12) | (((uint8_t)text[1] & 0x3F) << 6) | ((uint8_t)text[2] & 0x3F);
+    } else if ((byte1 & 0xF8) == 0xF0) {
+        // 4-byte UTF-8
+        byteCount = 4;
+        return ((byte1 & 0x07) << 18) | (((uint8_t)text[1] & 0x3F) << 12) |
+               (((uint8_t)text[2] & 0x3F) << 6) | ((uint8_t)text[3] & 0x3F);
+    }
+
+    byteCount = 1;
+    return 0; // Invalid UTF-8
+}
+
+// Draw a single CJK character
+void Screen::drawCJKChar(OLEDDisplay *display, int16_t x, int16_t y, uint16_t unicode) {
+    const uint8_t *bitmap = getCJKCharBitmap(unicode);
+    if (bitmap == nullptr) {
+        // Character not found, draw fallback
+        display->setFont(FONT_SMALL);
+        display->drawString(x, y, "?");
+        return;
+    }
+
+    // Draw the 12x12 bitmap
+    for (int row = 0; row < CJK_CHAR_HEIGHT; row++) {
+        for (int col = 0; col < CJK_CHAR_WIDTH; col++) {
+            int bytesPerRow = (CJK_CHAR_WIDTH + 7) / 8; // Round up to bytes
+            int byteIndex = row * bytesPerRow + (col / 8);
+            int bitIndex = 7 - (col % 8);
+
+            uint8_t pixelByte = pgm_read_byte(&bitmap[byteIndex]);
+            if (pixelByte & (1 << bitIndex)) {
+                display->setPixel(x + col, y + row);
+            }
+        }
+    }
+}
+
+// Check if a string contains CJK characters
+bool Screen::containsCJKCharacters(const char *text) {
+    int i = 0;
+    while (text[i] != '\0') {
+        int byteCount;
+        uint16_t unicode = utf8ToUnicode(&text[i], byteCount);
+        if (isCJKChar(unicode)) {
+            return true;
+        }
+        i += byteCount;
+    }
+    return false;
+}
+
+// Draw a string containing CJK characters
+void Screen::drawCJKString(OLEDDisplay *display, int16_t x, int16_t y, const char *text) {
+    int currentX = x;
+    int i = 0;
+
+    while (text[i] != '\0') {
+        int byteCount;
+        uint16_t unicode = utf8ToUnicode(&text[i], byteCount);
+
+        if (isCJKChar(unicode)) {
+            // Draw CJK character
+            drawCJKChar(display, currentX, y, unicode);
+            currentX += CJK_CHAR_WIDTH;
+        } else if (unicode < 128) {
+            // Draw ASCII character using regular font
+            char asciiChar[2] = {(char)unicode, '\0'};
+            display->setFont(FONT_SMALL);
+            display->drawString(currentX, y, asciiChar);
+            currentX += display->getStringWidth(asciiChar);
+        } else {
+            // Other Unicode character, use fallback
+            display->setFont(FONT_SMALL);
+            display->drawString(currentX, y, "?");
+            currentX += display->getStringWidth("?");
+        }
+
+        i += byteCount;
+    }
+}
+
+// Draw a string containing CJK characters with automatic line wrapping
+void Screen::drawCJKStringMaxWidth(OLEDDisplay *display, int16_t x, int16_t y, int16_t maxWidth, const char *text) {
+    int lineHeight = max(CJK_CHAR_HEIGHT, FONT_HEIGHT_SMALL);
+    int screenHeight = display->getHeight();
+    int maxDisplayLines = (screenHeight - y) / lineHeight;
+
+    // Break text into lines (do this once)
+    if (textLines.empty()) {
+        String currentLine = "";
+        int currentWidth = 0;
+        int i = 0;
+
+        while (text[i] != '\0') {
+            int byteCount;
+            uint16_t unicode = utf8ToUnicode(&text[i], byteCount);
+            int charWidth = isCJKChar(unicode) ? CJK_CHAR_WIDTH : 6;
+            if (currentWidth + charWidth > maxWidth && currentLine.length() > 0) {
+                textLines.push_back(currentLine);
+                currentLine = "";
+                currentWidth = 0;
+            }
+
+            // Add character to current line
+            for (int j = 0; j < byteCount; j++) {
+                currentLine += text[i + j];
+            }
+            currentWidth += charWidth;
+            i += byteCount;
+        }
+
+        if (currentLine.length() > 0) {
+            textLines.push_back(currentLine);
+        }
+    }
+
+    // Auto-scroll if needed
+    if (textLines.size() > maxDisplayLines) {
+        unsigned long currentTime = millis();
+        if (currentTime - lastScrollTime >= 1500) {
+            currentLineStart++;
+            if (currentLineStart + maxDisplayLines > textLines.size()) {
+                currentLineStart = 0;
+            }
+            lastScrollTime = currentTime;
+        }
+    }
+
+    // Draw visible lines
+    int linesToShow = min(maxDisplayLines, (int)textLines.size() - currentLineStart);
+    for (int i = 0; i < linesToShow; i++) {
+        int lineY = y + (i * lineHeight);
+        drawCJKString(display, x, lineY, textLines[currentLineStart + i].c_str());
+    }
+}
+
+#endif // CJK_ENABLE
+
 } // namespace graphics
 #else
 graphics::Screen::Screen(ScanI2C::DeviceAddress, meshtastic_Config_DisplayConfig_OledType, OLEDDISPLAY_GEOMETRY) {}
 #endif // HAS_SCREEN
+
