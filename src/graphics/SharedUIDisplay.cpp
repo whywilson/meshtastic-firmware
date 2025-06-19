@@ -63,6 +63,9 @@ void drawCommonHeader(OLEDDisplay *display, int16_t x, int16_t y, const char *ti
         drawRoundedHighlight(display, x, y, screenW, highlightHeight, 2);
         display->setColor(BLACK);
     } else {
+        display->setColor(BLACK);
+        display->fillRect(0, 0, screenW, highlightHeight + 3);
+        display->setColor(WHITE);
         if (screenW > 128) {
             display->drawLine(0, 20, screenW, 20);
         } else {
@@ -297,15 +300,7 @@ const int *getTextPositions(OLEDDisplay *display)
 {
     static int textPositions[7]; // Static array that persists beyond function scope
 
-    if (display->getHeight() >= 170) {
-        textPositions[0] = textZeroLine;
-        textPositions[1] = textFirstLine_large;
-        textPositions[2] = textSecondLine_large;
-        textPositions[3] = textThirdLine_large;
-        textPositions[4] = textFourthLine_large;
-        textPositions[5] = textFifthLine_large;
-        textPositions[6] = textSixthLine_large;
-    } else if (display->getHeight() > 64) {
+    if (display->getHeight() > 64) {
         textPositions[0] = textZeroLine;
         textPositions[1] = textFirstLine_medium;
         textPositions[2] = textSecondLine_medium;

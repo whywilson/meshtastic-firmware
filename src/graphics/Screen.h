@@ -251,8 +251,6 @@ class Screen : public concurrency::OSThread
 
     void blink();
 
-    void getTimeAgoStr(uint32_t agoSecs, char *timeStr, uint8_t maxLength);
-
     // Draw north
     float estimatedHeading(double lat, double lon);
 
@@ -603,6 +601,8 @@ class Screen : public concurrency::OSThread
     void handleShowNextFrame();
     void handleShowPrevFrame();
     void handleStartFirmwareUpdateScreen();
+    void TZPicker();
+    void LoraRegionPicker(uint32_t duration = 30000);
 
     // Info collected by setFrames method.
     // Index location of specific frames.
@@ -622,6 +622,9 @@ class Screen : public concurrency::OSThread
             uint8_t gps = 255;
             uint8_t home = 255;
             uint8_t clock = 255;
+            uint8_t firstFavorite = 255;
+            uint8_t lastFavorite = 255;
+            uint8_t lora = 255;
         } positions;
 
         uint8_t frameCount = 0;

@@ -37,6 +37,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 // Additional includes for UI rendering
 #include "UIRenderer.h"
+#include "graphics/TimeFormatters.h"
 
 // Additional includes for dependencies
 #include <string>
@@ -54,77 +55,6 @@ namespace graphics
 {
 namespace MessageRenderer
 {
-
-// Forward declaration from Screen.cpp - this function needs to be accessible
-// For now, we'll implement a local version that matches the Screen.cpp functionality
-bool deltaToTimestamp(uint32_t secondsAgo, uint8_t *hours, uint8_t *minutes, int32_t *daysAgo)
-{
-    // Cache the result - avoid frequent recalculation
-    static uint8_t hoursCached = 0, minutesCached = 0;
-    static uint32_t daysAgoCached = 0;
-    static uint32_t secondsAgoCached = 0;
-    static bool validCached = false;
-
-    // Abort: if timezone not set
-    if (strlen(config.device.tzdef) == 0) {
-        validCached = false;
-        return validCached;
-    }
-
-    // Abort: if invalid pointers passed
-    if (hours == nullptr || minutes == nullptr || daysAgo == nullptr) {
-        validCached = false;
-        return validCached;
-    }
-
-    // Abort: if time seems invalid.. (> 6 months ago, probably seen before RTC set)
-    if (secondsAgo > SEC_PER_DAY * 30UL * 6) {
-        validCached = false;
-        return validCached;
-    }
-
-    // If repeated request, don't bother recalculating
-    if (secondsAgo - secondsAgoCached < 60 && secondsAgoCached != 0) {
-        if (validCached) {
-            *hours = hoursCached;
-            *minutes = minutesCached;
-            *daysAgo = daysAgoCached;
-        }
-        return validCached;
-    }
-
-    // Get local time
-    uint32_t secondsRTC = getValidTime(RTCQuality::RTCQualityDevice, true); // Get local time
-
-    // Abort: if RTC not set
-    if (!secondsRTC) {
-        validCached = false;
-        return validCached;
-    }
-
-    // Get absolute time when last seen
-    uint32_t secondsSeenAt = secondsRTC - secondsAgo;
-
-    // Calculate daysAgo
-    *daysAgo = (secondsRTC / SEC_PER_DAY) - (secondsSeenAt / SEC_PER_DAY); // How many "midnights" have passed
-
-    // Get seconds since midnight
-    uint32_t hms = (secondsRTC - secondsAgo) % SEC_PER_DAY;
-    hms = (hms + SEC_PER_DAY) % SEC_PER_DAY;
-
-    // Tear apart hms into hours and minutes
-    *hours = hms / SEC_PER_HOUR;
-    *minutes = (hms % SEC_PER_HOUR) / SEC_PER_MIN;
-
-    // Cache the result
-    daysAgoCached = *daysAgo;
-    hoursCached = *hours;
-    minutesCached = *minutes;
-    secondsAgoCached = secondsAgo;
-
-    validCached = true;
-    return validCached;
-}
 
 void drawStringWithEmotes(OLEDDisplay *display, int x, int y, const std::string &line, const Emote *emotes, int emoteCount)
 {
@@ -234,6 +164,7 @@ void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
     const meshtastic_MeshPacket &mp = devicestate.rx_text_message;
     const char *msg = reinterpret_cast<const char *>(mp.decoded.payload.bytes);
 
+    display->clear();
     display->setTextAlignment(TEXT_ALIGN_LEFT);
     display->setFont(FONT_SMALL);
 
@@ -241,10 +172,24 @@ void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
     const int scrollBottom = SCREEN_HEIGHT - navHeight;
     const int usableHeight = scrollBottom;
     const int textWidth = SCREEN_WIDTH;
-    const int cornerRadius = 2;
 
     bool isInverted = (config.display.displaymode != meshtastic_Config_DisplayConfig_DisplayMode_INVERTED);
     bool isBold = config.display.heading_bold;
+
+    // === Set Title
+    const char *titleStr = "Messages";
+
+    // Check if we have more than an empty message to show
+    char messageBuf[237];
+    snprintf(messageBuf, sizeof(messageBuf), "%s", msg);
+    if (strlen(messageBuf) == 0) {
+        // === Header ===
+        graphics::drawCommonHeader(display, x, y, titleStr);
+        const char *messageString = "No messages";
+        int center_text = (SCREEN_WIDTH / 2) - (display->getStringWidth(messageString) / 2);
+        display->drawString(center_text, getTextPositions(display)[2], messageString);
+        return;
+    }
 
     // === Header Construction ===
     meshtastic_NodeInfoLite *node = nodeDB->getMeshNode(getFrom(&mp));
@@ -295,22 +240,7 @@ void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
     for (int i = 0; i < numEmotes; ++i) {
         const Emote &e = emotes[i];
         if (strcmp(msg, e.label) == 0) {
-            // Draw the header
-            if (isInverted) {
-                drawRoundedHighlight(display, x, 0, SCREEN_WIDTH, FONT_HEIGHT_SMALL - 1, cornerRadius);
-                display->setColor(BLACK);
-                display->drawString(x + 3, 0, headerStr);
-                if (isBold)
-                    display->drawString(x + 4, 0, headerStr);
-                display->setColor(WHITE);
-            } else {
-                display->drawString(x, 0, headerStr);
-                if (SCREEN_WIDTH > 128) {
-                    display->drawLine(0, 20, SCREEN_WIDTH, 20);
-                } else {
-                    display->drawLine(0, 14, SCREEN_WIDTH, 14);
-                }
-            }
+            display->drawString(x, getTextPositions(display)[2], headerStr);
 
             // Center the emote below header + apply bounce
             int remainingHeight = SCREEN_HEIGHT - FONT_HEIGHT_SMALL - navHeight;
@@ -322,9 +252,6 @@ void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
 #endif
 
     // === Word-wrap and build line list ===
-    char messageBuf[237];
-    snprintf(messageBuf, sizeof(messageBuf), "%s", msg);
-
     std::vector<std::string> lines;
     lines.push_back(std::string(headerStr)); // Header line is always first
 
@@ -376,7 +303,7 @@ void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
         totalHeight += rowHeights[i];
     }
     int usableScrollHeight = usableHeight - rowHeights[0]; // remove header height
-    int scrollStop = std::max(0, totalHeight - usableScrollHeight);
+    int scrollStop = std::max(0, totalHeight - usableScrollHeight + rowHeights.back());
 
     static float scrollY = 0.0f;
     static uint32_t lastTime = 0, scrollStartDelay = 0, pauseStart = 0;
@@ -417,13 +344,11 @@ void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
     }
 
     int scrollOffset = static_cast<int>(scrollY);
-    int yOffset = -scrollOffset;
-    if (!isInverted) {
-        if (SCREEN_WIDTH > 128) {
-            display->drawLine(0, yOffset + 20, SCREEN_WIDTH, yOffset + 20);
-        } else {
-            display->drawLine(0, yOffset + 14, SCREEN_WIDTH, yOffset + 14);
-        }
+    int yOffset = -scrollOffset + getTextPositions(display)[1];
+    if (SCREEN_WIDTH > 128) {
+        display->drawLine(0, yOffset + 20, SCREEN_WIDTH - (SCREEN_WIDTH * 0.1), yOffset + 20);
+    } else {
+        display->drawLine(0, yOffset + 14, SCREEN_WIDTH - (SCREEN_WIDTH * 0.1), yOffset + 14);
     }
 
     // === Render visible lines ===
@@ -433,17 +358,17 @@ void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
             lineY += rowHeights[j];
         if (lineY > -rowHeights[i] && lineY < scrollBottom) {
             if (i == 0 && isInverted) {
-                drawRoundedHighlight(display, x, lineY, SCREEN_WIDTH, FONT_HEIGHT_SMALL - 1, cornerRadius);
-                display->setColor(BLACK);
                 display->drawString(x + 3, lineY, lines[i].c_str());
                 if (isBold)
                     display->drawString(x + 4, lineY, lines[i].c_str());
-                display->setColor(WHITE);
             } else {
                 drawStringWithEmotes(display, x, lineY, lines[i], emotes, numEmotes);
             }
         }
     }
+
+    // === Header ===
+    graphics::drawCommonHeader(display, x, y, titleStr);
 }
 
 } // namespace MessageRenderer

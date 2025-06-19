@@ -28,12 +28,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <OLEDDisplay.h>
 
 #include "DisplayFormatters.h"
+#include "TimeFormatters.h"
 #include "draw/ClockRenderer.h"
 #include "draw/DebugRenderer.h"
 #include "draw/MessageRenderer.h"
 #include "draw/NodeListRenderer.h"
 #include "draw/NotificationRenderer.h"
 #include "draw/UIRenderer.h"
+#include "modules/CannedMessageModule.h"
+
 #if !MESHTASTIC_EXCLUDE_GPS
 #include "GPS.h"
 #include "buzz.h"
@@ -178,76 +181,6 @@ static bool shouldDrawMessage(const meshtastic_MeshPacket *packet)
     return packet->from != 0 && !moduleConfig.store_forward.enabled;
 }
 
-// Get an absolute time from "seconds ago" info. Returns false if no valid timestamp possible
-bool deltaToTimestamp(uint32_t secondsAgo, uint8_t *hours, uint8_t *minutes, int32_t *daysAgo)
-{
-    // Cache the result - avoid frequent recalculation
-    static uint8_t hoursCached = 0, minutesCached = 0;
-    static uint32_t daysAgoCached = 0;
-    static uint32_t secondsAgoCached = 0;
-    static bool validCached = false;
-
-    // Abort: if timezone not set
-    if (strlen(config.device.tzdef) == 0) {
-        validCached = false;
-        return validCached;
-    }
-
-    // Abort: if invalid pointers passed
-    if (hours == nullptr || minutes == nullptr || daysAgo == nullptr) {
-        validCached = false;
-        return validCached;
-    }
-
-    // Abort: if time seems invalid.. (> 6 months ago, probably seen before RTC set)
-    if (secondsAgo > SEC_PER_DAY * 30UL * 6) {
-        validCached = false;
-        return validCached;
-    }
-
-    // If repeated request, don't bother recalculating
-    if (secondsAgo - secondsAgoCached < 60 && secondsAgoCached != 0) {
-        if (validCached) {
-            *hours = hoursCached;
-            *minutes = minutesCached;
-            *daysAgo = daysAgoCached;
-        }
-        return validCached;
-    }
-
-    // Get local time
-    uint32_t secondsRTC = getValidTime(RTCQuality::RTCQualityDevice, true); // Get local time
-
-    // Abort: if RTC not set
-    if (!secondsRTC) {
-        validCached = false;
-        return validCached;
-    }
-
-    // Get absolute time when last seen
-    uint32_t secondsSeenAt = secondsRTC - secondsAgo;
-
-    // Calculate daysAgo
-    *daysAgo = (secondsRTC / SEC_PER_DAY) - (secondsSeenAt / SEC_PER_DAY); // How many "midnights" have passed
-
-    // Get seconds since midnight
-    uint32_t hms = (secondsRTC - secondsAgo) % SEC_PER_DAY;
-    hms = (hms + SEC_PER_DAY) % SEC_PER_DAY;
-
-    // Tear apart hms into hours and minutes
-    *hours = hms / SEC_PER_HOUR;
-    *minutes = (hms % SEC_PER_HOUR) / SEC_PER_MIN;
-
-    // Cache the result
-    daysAgoCached = *daysAgo;
-    hoursCached = *hours;
-    minutesCached = *minutes;
-    secondsAgoCached = secondsAgo;
-
-    validCached = true;
-    return validCached;
-}
-
 /**
  * Given a recent lat/lon return a guess of the heading the user is walking on.
  *
@@ -281,36 +214,6 @@ float Screen::estimatedHeading(double lat, double lon)
 /// We will skip one node - the one for us, so we just blindly loop over all
 /// nodes
 static int8_t prevFrame = -1;
-
-// Get a string representation of the time passed since something happened
-void Screen::getTimeAgoStr(uint32_t agoSecs, char *timeStr, uint8_t maxLength)
-{
-    // Use an absolute timestamp in some cases.
-    // Particularly useful with E-Ink displays. Static UI, fewer refreshes.
-    uint8_t timestampHours, timestampMinutes;
-    int32_t daysAgo;
-    bool useTimestamp = deltaToTimestamp(agoSecs, &timestampHours, &timestampMinutes, &daysAgo);
-
-    if (agoSecs < 120) // last 2 mins?
-        snprintf(timeStr, maxLength, "%u seconds ago", agoSecs);
-    // -- if suitable for timestamp --
-    else if (useTimestamp && agoSecs < 15 * SECONDS_IN_MINUTE) // Last 15 minutes
-        snprintf(timeStr, maxLength, "%u minutes ago", agoSecs / SECONDS_IN_MINUTE);
-    else if (useTimestamp && daysAgo == 0) // Today
-        snprintf(timeStr, maxLength, "Last seen: %02u:%02u", (unsigned int)timestampHours, (unsigned int)timestampMinutes);
-    else if (useTimestamp && daysAgo == 1) // Yesterday
-        snprintf(timeStr, maxLength, "Seen yesterday");
-    else if (useTimestamp && daysAgo > 1) // Last six months (capped by deltaToTimestamp method)
-        snprintf(timeStr, maxLength, "%li days ago", (long)daysAgo);
-    // -- if using time delta instead --
-    else if (agoSecs < 120 * 60) // last 2 hrs
-        snprintf(timeStr, maxLength, "%u minutes ago", agoSecs / 60);
-    // Only show hours ago if it's been less than 6 months. Otherwise, we may have bad data.
-    else if ((agoSecs / 60 / 60) < (HOURS_IN_MONTH * 6))
-        snprintf(timeStr, maxLength, "%u hours ago", agoSecs / 60 / 60);
-    else
-        snprintf(timeStr, maxLength, "unknown age");
-}
 
 // Combined dynamic node list frame cycling through LastHeard, HopSignal, and Distance modes
 // Uses a single frame and changes data every few seconds (E-Ink variant is separate)
@@ -683,38 +586,7 @@ int32_t Screen::runOnce()
 
 #ifndef DISABLE_WELCOME_UNSET
     if (!NotificationRenderer::isOverlayBannerShowing() && config.lora.region == meshtastic_Config_LoRaConfig_RegionCode_UNSET) {
-        showOverlayBanner(
-            "Set the LoRa "
-            "region\nUS\nEU_433\nEU_868\nCN\nJP\nANZ\nKR\nTW\nRU\nIN\nNZ_865\nTH\nLORA_24\nUA_433\nUA_868\nMY_433\nMY_919\nSG_"
-            "923\nPH_433\nPH_868\nPH_915",
-            0, 21, [](int selected) -> void {
-                config.lora.region = _meshtastic_Config_LoRaConfig_RegionCode(selected + 1);
-                if (!owner.is_licensed) {
-                    bool keygenSuccess = false;
-                    if (config.security.private_key.size == 32) {
-                        if (crypto->regeneratePublicKey(config.security.public_key.bytes, config.security.private_key.bytes)) {
-                            keygenSuccess = true;
-                        }
-                    } else {
-                        LOG_INFO("Generate new PKI keys");
-                        crypto->generateKeyPair(config.security.public_key.bytes, config.security.private_key.bytes);
-                        keygenSuccess = true;
-                    }
-                    if (keygenSuccess) {
-                        config.security.public_key.size = 32;
-                        config.security.private_key.size = 32;
-                        owner.public_key.size = 32;
-                        memcpy(owner.public_key.bytes, config.security.public_key.bytes, 32);
-                    }
-                }
-                config.lora.tx_enabled = true;
-                initRegion();
-                if (myRegion->dutyCycle < 100) {
-                    config.lora.ignore_mqtt = true; // Ignore MQTT by default if region has a duty cycle limit
-                }
-                service->reloadConfig(SEGMENT_CONFIG);
-                rebootAtMsec = (millis() + DEFAULT_REBOOT_SECONDS * 1000);
-            });
+        LoraRegionPicker(0);
     }
 #endif
     if (!NotificationRenderer::isOverlayBannerShowing() && rebootAtMsec != 0) {
@@ -895,19 +767,10 @@ void Screen::setFrames(FrameFocus focus)
     showingNormalScreen = true;
 
     indicatorIcons.clear();
-    moduleFrames = MeshModule::GetMeshModulesWithUIFrames();
-    LOG_DEBUG("Show %d module frames", moduleFrames.size());
-#ifdef DEBUG_PORT
-    int totalFrameCount = MAX_NUM_NODES + NUM_EXTRA_FRAMES + moduleFrames.size();
-    LOG_DEBUG("Total frame count: %d", totalFrameCount);
-#endif
-
-    // We don't show the node info of our node (if we have it yet - we should)
-    size_t numMeshNodes = nodeDB->getNumMeshNodes();
-    if (numMeshNodes > 0)
-        numMeshNodes--;
 
     size_t numframes = 0;
+    moduleFrames = MeshModule::GetMeshModulesWithUIFrames();
+    LOG_DEBUG("Show %d module frames", moduleFrames.size());
 
     // put all of the module frames first.
     // this is a little bit of a dirty hack; since we're going to call
@@ -951,15 +814,13 @@ void Screen::setFrames(FrameFocus focus)
     // Declare this early so it’s available in FOCUS_PRESERVE block
     bool willInsertTextMessage = shouldDrawMessage(&devicestate.rx_text_message);
 
-    if (willInsertTextMessage) {
-        fsi.positions.textMessage = numframes;
-        normalFrames[numframes++] = graphics::MessageRenderer::drawTextMessageFrame;
-        indicatorIcons.push_back(icon_mail);
-    }
-
     fsi.positions.home = numframes;
     normalFrames[numframes++] = graphics::UIRenderer::drawDeviceFocused;
     indicatorIcons.push_back(icon_home);
+
+    fsi.positions.textMessage = numframes;
+    normalFrames[numframes++] = graphics::MessageRenderer::drawTextMessageFrame;
+    indicatorIcons.push_back(icon_mail);
 
 #ifndef USE_EINK
     normalFrames[numframes++] = graphics::NodeListRenderer::drawDynamicNodeListScreen;
@@ -986,6 +847,7 @@ void Screen::setFrames(FrameFocus focus)
     indicatorIcons.push_back(icon_compass);
 #endif
     if (RadioLibInterface::instance) {
+        fsi.positions.lora = numframes;
         normalFrames[numframes++] = graphics::DebugRenderer::drawLoRaFocused;
         indicatorIcons.push_back(icon_radio);
     }
@@ -1000,9 +862,17 @@ void Screen::setFrames(FrameFocus focus)
     indicatorIcons.push_back(icon_clock);
 #endif
 
+    // We don't show the node info of our node (if we have it yet - we should)
+    size_t numMeshNodes = nodeDB->getNumMeshNodes();
+    if (numMeshNodes > 0)
+        numMeshNodes--;
+
     for (size_t i = 0; i < nodeDB->getNumMeshNodes(); i++) {
         const meshtastic_NodeInfoLite *n = nodeDB->getMeshNodeByIndex(i);
         if (n && n->num != nodeDB->getNodeNum() && n->is_favorite) {
+            if (fsi.positions.firstFavorite == 255)
+                fsi.positions.firstFavorite = numframes;
+            fsi.positions.lastFavorite = numframes;
             normalFrames[numframes++] = graphics::UIRenderer::drawNodeInfo;
             indicatorIcons.push_back(icon_node);
         }
@@ -1085,8 +955,6 @@ void Screen::dismissCurrentFrame()
         LOG_INFO("Dismiss Text Message");
         devicestate.has_rx_text_message = false;
         memset(&devicestate.rx_text_message, 0, sizeof(devicestate.rx_text_message));
-        dismissedFrames.textMessage = true;
-        dismissed = true;
     } else if (currentFrame == framesetInfo.positions.waypoint && devicestate.has_rx_waypoint) {
         LOG_DEBUG("Dismiss Waypoint");
         devicestate.has_rx_waypoint = false;
@@ -1280,13 +1148,13 @@ int Screen::handleTextMessage(const meshtastic_MeshPacket *packet)
 
             if (isAlert) {
                 if (longName && longName[0]) {
-                    snprintf(banner, sizeof(banner), "Alert Received\nfrom %s", longName);
+                    snprintf(banner, sizeof(banner), "Alert Received from\n%s", longName);
                 } else {
                     strcpy(banner, "Alert Received");
                 }
             } else {
                 if (longName && longName[0]) {
-                    snprintf(banner, sizeof(banner), "New Message\nfrom %s", longName);
+                    snprintf(banner, sizeof(banner), "New Message from\n%s", longName);
                 } else {
                     strcpy(banner, "New Message");
                 }
@@ -1374,7 +1242,24 @@ int Screen::handleInputEvent(const InputEvent *event)
                 showNextFrame();
             } else if (event->inputEvent == INPUT_BROKER_SELECT) {
                 if (this->ui->getUiState()->currentFrame == framesetInfo.positions.home) {
-                    setOn(false);
+                    const char *banner_message;
+                    int options;
+                    if (kb_found) {
+                        banner_message = "Action?\nBack\nSleep Screen\nPreset Messages\nFreetype";
+                        options = 4;
+                    } else {
+                        banner_message = "Action?\nBack\nSleep Screen\nPreset Messages";
+                        options = 3;
+                    }
+                    showOverlayBanner(banner_message, 30000, options, [](int selected) -> void {
+                        if (selected == 1) {
+                            screen->setOn(false);
+                        } else if (selected == 2) {
+                            cannedMessageModule->LaunchWithDestination(NODENUM_BROADCAST);
+                        } else if (selected == 3) {
+                            cannedMessageModule->LaunchFreetextWithDestination(NODENUM_BROADCAST);
+                        }
+                    });
 #if HAS_TFT
                 } else if (this->ui->getUiState()->currentFrame == framesetInfo.positions.memory) {
                     showOverlayBanner("Switch to MUI?\nYES\nNO", 30000, 2, [](int selected) -> void {
@@ -1385,78 +1270,100 @@ int Screen::handleInputEvent(const InputEvent *event)
                             rebootAtMsec = (millis() + DEFAULT_REBOOT_SECONDS * 1000);
                         }
                     });
+#else
+                } else if (this->ui->getUiState()->currentFrame == framesetInfo.positions.memory) {
+                    showOverlayBanner(
+                        "Beeps Mode\nAll Enabled\nDisabled\nNotifications\nSystem Only", 30000, 4,
+                        [](int selected) -> void {
+                            config.device.buzzer_mode = (meshtastic_Config_DeviceConfig_BuzzerMode)selected;
+                            service->reloadConfig(SEGMENT_CONFIG);
+                        },
+                        config.device.buzzer_mode);
 #endif
 #if HAS_GPS
                 } else if (this->ui->getUiState()->currentFrame == framesetInfo.positions.gps && gps) {
                     showOverlayBanner(
-                        "Toggle GPS\nENABLED\nDISABLED", 30000, 2,
+                        "Toggle GPS\nBack\nEnabled\nDisabled", 30000, 3,
                         [](int selected) -> void {
-                            if (selected == 0) {
+                            if (selected == 1) {
                                 config.position.gps_mode = meshtastic_Config_PositionConfig_GpsMode_ENABLED;
                                 playGPSEnableBeep();
                                 gps->enable();
-                            } else if (selected == 1) {
+                            } else if (selected == 2) {
                                 config.position.gps_mode = meshtastic_Config_PositionConfig_GpsMode_DISABLED;
                                 playGPSDisableBeep();
                                 gps->disable();
                             }
                             service->reloadConfig(SEGMENT_CONFIG);
                         },
-                        config.position.gps_mode == meshtastic_Config_PositionConfig_GpsMode_ENABLED ? 0
-                                                                                                     : 1); // set inital selection
+                        config.position.gps_mode == meshtastic_Config_PositionConfig_GpsMode_ENABLED ? 1
+                                                                                                     : 2); // set inital selection
 #endif
                 } else if (this->ui->getUiState()->currentFrame == framesetInfo.positions.clock) {
-                    showOverlayBanner(
-                        "Pick "
-                        "Timezone\nUS/Hawaii\nUS/Alaska\nUS/Pacific\nUS/Mountain\nUS/Central\nUS/Eastern\nUTC\nEU/Western\nEU/"
-                        "Central\nEU/Eastern\nAsia/Kolkata\nAsia/Hong_Kong\nAU/AWST\nAU/ACST\nAU/AEST\nPacific/NZ",
-                        30000, 16, [](int selected) -> void {
-                            if (selected == 0) { // Hawaii
-                                strncpy(config.device.tzdef, "HST10", sizeof(config.device.tzdef));
-                            } else if (selected == 1) { // Alaska
-                                strncpy(config.device.tzdef, "AKST9AKDT,M3.2.0,M11.1.0", sizeof(config.device.tzdef));
-                            } else if (selected == 2) { // Pacific
-                                strncpy(config.device.tzdef, "PST8PDT,M3.2.0,M11.1.0", sizeof(config.device.tzdef));
-                            } else if (selected == 3) { // Mountain
-                                strncpy(config.device.tzdef, "MST7MDT,M3.2.0,M11.1.0", sizeof(config.device.tzdef));
-                            } else if (selected == 4) { // Central
-                                strncpy(config.device.tzdef, "CST6CDT,M3.2.0,M11.1.0", sizeof(config.device.tzdef));
-                            } else if (selected == 5) { // Eastern
-                                strncpy(config.device.tzdef, "EST5EDT,M3.2.0,M11.1.0", sizeof(config.device.tzdef));
-                            } else if (selected == 6) { // UTC
-                                strncpy(config.device.tzdef, "UTC", sizeof(config.device.tzdef));
-                            } else if (selected == 7) { // EU/Western
-                                strncpy(config.device.tzdef, "GMT0BST,M3.5.0/1,M10.5.0", sizeof(config.device.tzdef));
-                            } else if (selected == 8) { // EU/Central
-                                strncpy(config.device.tzdef, "CET-1CEST,M3.5.0,M10.5.0/3", sizeof(config.device.tzdef));
-                            } else if (selected == 9) { // EU/Eastern
-                                strncpy(config.device.tzdef, "EET-2EEST,M3.5.0/3,M10.5.0/4", sizeof(config.device.tzdef));
-                            } else if (selected == 10) { // Asia/Kolkata
-                                strncpy(config.device.tzdef, "IST-5:30", sizeof(config.device.tzdef));
-                            } else if (selected == 11) { // China
-                                strncpy(config.device.tzdef, "HKT-8", sizeof(config.device.tzdef));
-                            } else if (selected == 12) { // AU/AWST
-                                strncpy(config.device.tzdef, "AWST-8", sizeof(config.device.tzdef));
-                            } else if (selected == 13) { // AU/ACST
-                                strncpy(config.device.tzdef, "ACST-9:30ACDT,M10.1.0,M4.1.0/3", sizeof(config.device.tzdef));
-                            } else if (selected == 14) { // AU/AEST
-                                strncpy(config.device.tzdef, "AEST-10AEDT,M10.1.0,M4.1.0/3", sizeof(config.device.tzdef));
-                            } else if (selected == 15) { // NZ
-                                strncpy(config.device.tzdef, "NZST-12NZDT,M9.5.0,M4.1.0/3", sizeof(config.device.tzdef));
+                    TZPicker();
+                } else if (this->ui->getUiState()->currentFrame == framesetInfo.positions.lora) {
+                    LoraRegionPicker();
+                } else if (this->ui->getUiState()->currentFrame == framesetInfo.positions.textMessage &&
+                           devicestate.rx_text_message.from) {
+                    const char *banner_message;
+                    int options;
+                    if (kb_found) {
+                        banner_message = "Message Action?\nBack\nDismiss\nPreset Messages\nFreetype";
+                        options = 4;
+                    } else {
+                        banner_message = "Message Action?\nBack\nDismiss\nPreset Messages";
+                        options = 3;
+                    }
+#ifdef HAS_I2S
+                    banner_message = "Message Action?\nBack\nDismiss\nPreset Messages\nFreetype\nRead Aloud";
+                    options = 5;
+#endif
+                    showOverlayBanner(banner_message, 30000, options, [](int selected) -> void {
+                        if (selected == 1) {
+                            screen->dismissCurrentFrame();
+                        } else if (selected == 2) {
+                            if (devicestate.rx_text_message.to == NODENUM_BROADCAST) {
+                                cannedMessageModule->LaunchWithDestination(NODENUM_BROADCAST,
+                                                                           devicestate.rx_text_message.channel);
+                            } else {
+                                cannedMessageModule->LaunchWithDestination(devicestate.rx_text_message.from);
                             }
+                        } else if (selected == 3) {
+                            if (devicestate.rx_text_message.to == NODENUM_BROADCAST) {
+                                cannedMessageModule->LaunchFreetextWithDestination(NODENUM_BROADCAST,
+                                                                                   devicestate.rx_text_message.channel);
+                            } else {
+                                cannedMessageModule->LaunchFreetextWithDestination(devicestate.rx_text_message.from);
+                            }
+                        }
+#ifdef HAS_I2S
+                        else if (selected == 4) {
+                            const meshtastic_MeshPacket &mp = devicestate.rx_text_message;
+                            const char *msg = reinterpret_cast<const char *>(mp.decoded.payload.bytes);
 
-                            setenv("TZ", config.device.tzdef, 1);
-                            service->reloadConfig(SEGMENT_CONFIG);
-                        });
-                } else if (this->ui->getUiState()->currentFrame == framesetInfo.positions.textMessage) {
-                    showOverlayBanner(
-                        "Dismiss Message?\nYES\nNO", 30000, 2,
-                        [](int selected) -> void {
-                            if (selected == 0) {
-                                screen->dismissCurrentFrame();
-                            }
-                        },
-                        1);
+                            audioThread->readAloud(msg);
+                        }
+#endif
+                    });
+                } else if (framesetInfo.positions.firstFavorite != 255 &&
+                           this->ui->getUiState()->currentFrame >= framesetInfo.positions.firstFavorite &&
+                           this->ui->getUiState()->currentFrame <= framesetInfo.positions.lastFavorite) {
+                    const char *banner_message;
+                    int options;
+                    if (kb_found) {
+                        banner_message = "Message Node?\nCancel\nPreset Messages\nFreetype";
+                        options = 3;
+                    } else {
+                        banner_message = "Message Node?\nCancel\nConfirm";
+                        options = 2;
+                    }
+                    showOverlayBanner(banner_message, 30000, options, [](int selected) -> void {
+                        if (selected == 1) {
+                            cannedMessageModule->LaunchWithDestination(graphics::UIRenderer::currentFavoriteNodeNum);
+                        } else if (selected == 2) {
+                            cannedMessageModule->LaunchFreetextWithDestination(graphics::UIRenderer::currentFavoriteNodeNum);
+                        }
+                    });
                 }
             } else if (event->inputEvent == INPUT_BROKER_BACK) {
                 showPrevFrame();
@@ -1489,7 +1396,97 @@ bool Screen::isOverlayBannerShowing()
     return NotificationRenderer::isOverlayBannerShowing();
 }
 
+void Screen::LoraRegionPicker(uint32_t duration)
+{
+    showOverlayBanner(
+        "Set the LoRa "
+        "region\nBack\nUS\nEU_433\nEU_868\nCN\nJP\nANZ\nKR\nTW\nRU\nIN\nNZ_865\nTH\nLORA_24\nUA_433\nUA_868\nMY_433\nMY_"
+        "919\nSG_"
+        "923\nPH_433\nPH_868\nPH_915",
+        duration, 22,
+        [](int selected) -> void {
+            if (selected != 0 && config.lora.region != _meshtastic_Config_LoRaConfig_RegionCode(selected)) {
+                config.lora.region = _meshtastic_Config_LoRaConfig_RegionCode(selected);
+                // This is needed as we wait til picking the LoRa region to generate keys for the first time.
+                if (!owner.is_licensed) {
+                    bool keygenSuccess = false;
+                    if (config.security.private_key.size == 32) {
+                        // public key is derived from private, so this will always have the same result.
+                        if (crypto->regeneratePublicKey(config.security.public_key.bytes, config.security.private_key.bytes)) {
+                            keygenSuccess = true;
+                        }
+                    } else {
+                        LOG_INFO("Generate new PKI keys");
+                        crypto->generateKeyPair(config.security.public_key.bytes, config.security.private_key.bytes);
+                        keygenSuccess = true;
+                    }
+                    if (keygenSuccess) {
+                        config.security.public_key.size = 32;
+                        config.security.private_key.size = 32;
+                        owner.public_key.size = 32;
+                        memcpy(owner.public_key.bytes, config.security.public_key.bytes, 32);
+                    }
+                }
+                config.lora.tx_enabled = true;
+                initRegion();
+                if (myRegion->dutyCycle < 100) {
+                    config.lora.ignore_mqtt = true; // Ignore MQTT by default if region has a duty cycle limit
+                }
+                service->reloadConfig(SEGMENT_CONFIG);
+                rebootAtMsec = (millis() + DEFAULT_REBOOT_SECONDS * 1000);
+            }
+        },
+        0);
+}
+
+void Screen::TZPicker()
+{
+    showOverlayBanner(
+        "Pick "
+        "Timezone\nBack\nUS/Hawaii\nUS/Alaska\nUS/Pacific\nUS/Mountain\nUS/Central\nUS/Eastern\nUTC\nEU/Western\nEU/"
+        "Central\nEU/Eastern\nAsia/Kolkata\nAsia/Hong_Kong\nAU/AWST\nAU/ACST\nAU/AEST\nPacific/NZ",
+        30000, 17, [](int selected) -> void {
+            if (selected == 1) { // Hawaii
+                strncpy(config.device.tzdef, "HST10", sizeof(config.device.tzdef));
+            } else if (selected == 2) { // Alaska
+                strncpy(config.device.tzdef, "AKST9AKDT,M3.2.0,M11.1.0", sizeof(config.device.tzdef));
+            } else if (selected == 3) { // Pacific
+                strncpy(config.device.tzdef, "PST8PDT,M3.2.0,M11.1.0", sizeof(config.device.tzdef));
+            } else if (selected == 4) { // Mountain
+                strncpy(config.device.tzdef, "MST7MDT,M3.2.0,M11.1.0", sizeof(config.device.tzdef));
+            } else if (selected == 5) { // Central
+                strncpy(config.device.tzdef, "CST6CDT,M3.2.0,M11.1.0", sizeof(config.device.tzdef));
+            } else if (selected == 6) { // Eastern
+                strncpy(config.device.tzdef, "EST5EDT,M3.2.0,M11.1.0", sizeof(config.device.tzdef));
+            } else if (selected == 7) { // UTC
+                strncpy(config.device.tzdef, "UTC", sizeof(config.device.tzdef));
+            } else if (selected == 8) { // EU/Western
+                strncpy(config.device.tzdef, "GMT0BST,M3.5.0/1,M10.5.0", sizeof(config.device.tzdef));
+            } else if (selected == 9) { // EU/Central
+                strncpy(config.device.tzdef, "CET-1CEST,M3.5.0,M10.5.0/3", sizeof(config.device.tzdef));
+            } else if (selected == 10) { // EU/Eastern
+                strncpy(config.device.tzdef, "EET-2EEST,M3.5.0/3,M10.5.0/4", sizeof(config.device.tzdef));
+            } else if (selected == 11) { // Asia/Kolkata
+                strncpy(config.device.tzdef, "IST-5:30", sizeof(config.device.tzdef));
+            } else if (selected == 12) { // China
+                strncpy(config.device.tzdef, "HKT-8", sizeof(config.device.tzdef));
+            } else if (selected == 13) { // AU/AWST
+                strncpy(config.device.tzdef, "AWST-8", sizeof(config.device.tzdef));
+            } else if (selected == 14) { // AU/ACST
+                strncpy(config.device.tzdef, "ACST-9:30ACDT,M10.1.0,M4.1.0/3", sizeof(config.device.tzdef));
+            } else if (selected == 15) { // AU/AEST
+                strncpy(config.device.tzdef, "AEST-10AEDT,M10.1.0,M4.1.0/3", sizeof(config.device.tzdef));
+            } else if (selected == 16) { // NZ
+                strncpy(config.device.tzdef, "NZST-12NZDT,M9.5.0,M4.1.0/3", sizeof(config.device.tzdef));
+            }
+
+            setenv("TZ", config.device.tzdef, 1);
+            service->reloadConfig(SEGMENT_CONFIG);
+        });
+}
+
 } // namespace graphics
+
 #else
 graphics::Screen::Screen(ScanI2C::DeviceAddress, meshtastic_Config_DisplayConfig_OledType, OLEDDISPLAY_GEOMETRY) {}
 #endif // HAS_SCREEN

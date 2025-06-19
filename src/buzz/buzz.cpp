@@ -59,7 +59,7 @@ void playTones(const ToneDuration *tone_durations, int size)
 
 void playBeep()
 {
-    ToneDuration melody[] = {{NOTE_B3, DURATION_1_4}};
+    ToneDuration melody[] = {{NOTE_B3, DURATION_1_8}};
     playTones(melody, sizeof(melody) / sizeof(ToneDuration));
 }
 
@@ -90,6 +90,13 @@ void playStartMelody()
 void playShutdownMelody()
 {
     ToneDuration melody[] = {{NOTE_CS4, DURATION_1_8}, {NOTE_AS3, DURATION_1_8}, {NOTE_FS3, DURATION_1_4}};
+    playTones(melody, sizeof(melody) / sizeof(ToneDuration));
+}
+
+void playChirp()
+{
+    // A short, friendly "chirp" sound for key presses
+    ToneDuration melody[] = {{NOTE_AS3, 20}}; // Very short AS3 note
     playTones(melody, sizeof(melody) / sizeof(ToneDuration));
 }
 
