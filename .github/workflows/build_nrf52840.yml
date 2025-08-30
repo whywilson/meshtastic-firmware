@@ -26,9 +26,11 @@ jobs:
         run: pip install -U platformio
       - id: jsonStep
         run: |
-          # Build all nrf52840 devices: default + pr + extra
-          # Passing 'extra' includes board_level=extra in addition to default and pr
-          TARGETS=$(./bin/generate_ci_matrix.py ${{matrix.arch}} extra)
+          if [[ "$GITHUB_HEAD_REF" == "" ]]; then
+            TARGETS=$(./bin/generate_ci_matrix.py ${{matrix.arch}})
+          else  
+            TARGETS=$(./bin/generate_ci_matrix.py ${{matrix.arch}} quick)
+          fi
           echo "Name: $GITHUB_REF_NAME Base: $GITHUB_BASE_REF Ref: $GITHUB_REF Targets: $TARGETS"
           echo "boards=$(jq -cn --argjson environments "$TARGETS" '$environments')" >> $GITHUB_OUTPUT
     outputs:
